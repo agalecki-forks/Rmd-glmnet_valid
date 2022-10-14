@@ -91,60 +91,70 @@ load("./datain/21Logistic-Reg1-save2.Rdata") # `cva_pfit2`
 
 
 ```{r tidy-cva-glmnet-method, include = FALSE}
-tidy.cva.glmnet <- function(x, extract = c("cvm", "beta"), ...){
+tidy.cva.glmnet <- function(x, extract = c("cva", "fit"), return_zeros = FALSE, ...){
   # estimate := cvm
   # 
   extract <- match.arg(extract)
   alpha   <- x$alpha   # vector
-  n <- length(alpha)
-
-  
-   modlist <- x$modlist
-   dtlist <- vector("list", length = n)
+  n <- length(alpha)  
+  modlist <- x$modlist
+  dtlist <- vector("list", length = n)
    for (i in 1:n) {
        modi <- modlist[[i]]      # cv.glmnet object
        dti <- switch (extract,
-                 cvm  = tidy(modi),            # tidy cv.glmnet object
-                 beta = tidy(modi$glmnet.fit)  ## tidy glmnet object
-                     )
-       dti$alpha <- alpha[i]
+                 default  = tidy(modi),        # tidy cv.glmnet object
+                 beta = tidy(modi$glmnet.fit, return_zeros = return_zeros)  ## tidy glmnet object
+                   )
+       dti$alpha  <- alpha[i] 
+       if (extract == "default") dti <- dti %>% mutate(step = 1:nrow(dti)) 
+          
        dtlist[[i]] <- dti
      }
-     ret <- dplyr::bind_rows(dtlist) %>% 
-        relocate(alpha) %>% relocate (lambda,.after = alpha) 
-  return(as_tibble(ret))
+     
+     ret <- dplyr::bind_rows(dtlist) %>% relocate (alpha) %>% 
+        relocate(step, lambda, .after = alpha) %>% arrange(alpha, step)                
+     ret <- group_by(ret, alpha)    
+ return(ret)
 }
+
+glance.cva.glmnet <- function(x, extract = c("default", "beta"), return_zeros = FALSE, ...){
+  # estimate := cvm
+  # 
+  extract <- match.arg(extract)
+  alpha   <- x$alpha   # vector
+  n <- length(alpha)  
+  modlist <- x$modlist
+  dtlist <- vector("list", length = n)
+   for (i in 1:n) {
+       modi <- modlist[[i]]      # cv.glmnet object
+       dti <- switch (extract,
+                 default  = glance(modi),        # tidy cv.glmnet object
+                 beta =     glance(modi$glmnet.fit)  ## tidy glmnet object
+                   )
+       dti$alpha  <- alpha[i] 
+       dtlist[[i]] <- dti
+     }
+     
+     ret <- dplyr::bind_rows(dtlist) %>% relocate (alpha) # %>% 
+        # relocate(step, lambda, .after = alpha) %>% arrange(alpha, step)                
+     ret <- group_by(ret, alpha)    
+ return(ret)
+}
+
+
+
+
 ```
 
 
-```{r 
+```{r tidy-cva-pfit1}
 tidy(cva_pfit1)
 tidy(cva_pfit1, extract = "beta")
-  
-
-
-cva_fit <- cva_pfit1
-alphv   <- cva_fit$alpha
-modlist <- cva_fit$modlist
-```
-
-```{r data-list}
-n <- length(alphv)
-dtlist <- vector("list", length = n )
-for (i in 1:n) {
-  modi_cv <- modlist[[i]] # cv.glmnet object
-  
-  dti_cv <- tidy(modi_cv)    # tidy cv.glmnet object
-  dti_cv$alpha <- alphv[i]
-  dtlist[[i]] <- dti
-}
-
-cva_res <- dplyr::bind_rows(dtlist) %>% arrange(estimate)
-names(cva_res)
-cva_res
-#cva_res %>% print(n=5000)
+glance(cva_pfit1)
+glance(cva_pfit1, extract = "beta")
 
 ```
+
 Extract candidate `glmnet` model and assess it's performance in the test_data 
 
 
