@@ -1,0 +1,197 @@
+---
+title: "Tidy survival"
+author: "Chunyi Wu and Andrzej Galecki"
+date: "`r as.character(Sys.Date(), format = '%A %B %d, %Y')`"
+output:
+  rmdformats::readthedown:
+    lightbox: true
+    use_bookdown: true 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment="#>")
+```
+
+```{r, data, echo=FALSE, message=FALSE, warning=FALSE}
+if (!require('pacman')) install.packages('pacman', repos = "http://cran.us.r-project.org")
+library(pacman)
+
+pacman::p_load(
+  readxl,       # load excel file
+  glmnet,       # Lasso and Elastic-Net Regularized Generalized Linear Models
+  rmdformats,   # rmd formats
+  rmarkdown,    # rmarkdown
+  here,         # File locator
+  skimr,        # get overview of data
+  tidyverse,    # data management + ggplot2 graphics 
+  tidymodels,   # for the recipes package, along with the rest of tidymodels
+  janitor,      # adding totals and percents to tables
+  flextable,    # format the output table
+  gtsummary,    # calculate summary statistics and format the results
+  sjPlot,       # correlation matrix
+  purrr,        # enhances R functional programming (FP) toolki 
+  tidyr,        # Tools to help to create tidy data
+  ggplot2,      # Plot the results
+  glmnetUtils,  # glmnet models for multiple alpha
+  coefplot,     # Plotting Model Coefficients
+  survival,
+  censored,
+  dplyr
+  )
+```
+
+
+In this report we consider penalized survival Cox regression model M2 for the `time` variable.
+`status` (0/1) variable indicates whether FU_TIME is censored or not. (0 is censored) 
+
+* M2 :Contains 21 proteins Baseline HbA1c), log10(ACR), eGFR as candidate covariates
+
+Analysis is preformed based on:
+
+https://parsnip.tidymodels.org/reference/details_proportional_hazards_glmnet.html
+
+
+
+
+# Read Data
+
+```{r, readxl-data}
+#read the data that is stored under the datain folder
+
+xlsx_path = "./datain/test_data053122.xlsx"
+data_orig <- readxl::read_excel(xlsx_path, na = "", guess_max = 1000)
+
+dim(data_orig)
+
+# Vectors with variable names in data_orig 
+tvars <- c("CASE_CONTROL", "FU_TIME")
+prot_nms <- c(
+ "KIM1.npx",       "SYND1.npx",   "IL.1RT1.npx", "WFDC2.npx", "CD27.npx", 
+ "TNFRSF10A.npx",  "LAYN.npx",    "PVRL4.npx",   "EDA2R.npx", "TNFRSF4.npx", 
+ "GFR_alpha_1_npx","TNF.R1.npx",  "PI3_npx",     "EFNA4.npx", "TNF.R2.npx",
+ "DLL1.npx",       "TNFRSF6B.npx","CD160.npx",   "EPHA2.npx", "RELT.npx",
+ "LTBR.npx")
+varx1 <- c("B_HBA1C_PRC", "DU_ACR", "BL_eGFR", "SEX", "AGE_TL") 
+
+varx2  <- c("SBP_TL", "DBP_TL", "AGEONSET_TL", "BMI_TL" )
+vars_sel <- c("INDEX",tvars, varx1, varx2, prot_nms)
+
+data_all <- data_orig  %>%  
+  select(all_of(vars_sel)) %>%
+  rename(., status = CASE_CONTROL, time = FU_TIME) %>% # rename variables
+  mutate(status = factor(status), SEX = factor(SEX), INDEX= factor(INDEX))  
+```
+## Descriptive statistics
+
+```{r data-all-summ}
+dim(data_all)
+# colnames(data_all)   
+glimpse(data_all)
+```
+
+
+```{r skim-data-all}
+data_all %>% 
+  group_by(status) %>%
+  skimr::skim(time, SEX, BL_eGFR, B_HBA1C_PRC, DU_ACR)
+```
+
+# Tidy penalized survival model
+
+## Build the model
+
+https://www.tidymodels.org/start/case-study/#first-model
+
+```{r surv-mod}
+
+surv_mod_init <- proportional_hazards(
+    penalty = tune(), mixture = tune()) %>% 
+    set_engine("glmnet") 
+surv_mod_init  %>%  translate()
+```
+
+
+## Preprocess data using recipe
+
+https://www.tidymodels.org/start/recipes/#recipe
+
+Initiate new recipe. It can be sued s starting point for several models.
+
+
+```{r survdata-recipe-init}
+surv_recp_init <-
+  recipe(time + status ~ . , data = data_all) %>%
+    update_role(INDEX,   new_role = "ID") %>%
+    update_role(time,    new_role = "outcome") %>%
+    update_role(status,  new_role = "status")  %>%
+    step_dummy(all_nominal_predictors()) %>% 
+    step_zv(all_predictors()) %>% 
+    step_normalize(all_predictors())
+```
+ 
+ From: https://www.tidymodels.org/start/case-study/#first-model
+ 
+ * `step_dummy()` converts characters or factors (i.e., nominal variables) into one or more numeric binary model terms for the levels of the original data.
+ * `step_zv()` removes indicator variables that only contain a single unique value (e.g. all zeros). This is important because, for penalized models, the predictors should be centered and scaled.
+ * `step_normalize()` centers and scales numeric variables.
+ 
+```{r survdata-recp2}
+ surv_recp2 <-  surv_recp_init %>%
+    update_role(DBP_TL, SBP_TL, AGEONSET_TL, BMI_TL, new_role = "_OMIT_")
+ summary(surv_recp2) 
+ summary(surv_recp2) %>% tail() 
+```
+
+
+## Create the workflow
+
+```{r surv-workflow-init}  
+surv_workflow0 <- 
+  workflow() %>% 
+  add_model(surv_mod_init) %>% 
+  add_recipe(surv_recp2) %>%
+  add_formula(
+```
+
+## Evaluate the model with resampling
+
+```{r initial-split}
+set.seed(123)
+splits <- initial_split(data_all, 
+                      strata = status, prop=0.8)
+```
+
+
+```{r data-train}
+data_train <- data_all  ## training(splits)
+data_test_init  <- testing(splits)
+```
+
+```{r val-set}
+set.seed(234)
+val_set <- validation_split(data_train, 
+                            prop = 0.80)
+```
+
+## Tuning hyperparameters
+
+```{r tune-grid}  
+tune_grid_dt <- grid_regular( 
+        penalty(),
+        mixture(),
+        levels = c(5,3))             
+```
+
+## Train and tune the model
+
+https://www.tidyverse.org/blog/2021/11/survival-analysis-parsnip-adjacent/
+
+```{r surv-workflow}  
+surv_workflow <- surv_workflow0 %>%
+    tune_grid(val_set,
+              preprocessor = surv_recp2,
+              grid =  tune_grid_dt,
+              control = control_grid(save_pred = TRUE),
+              metrics = metric_set(roc_auc))
+
+```
