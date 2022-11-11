@@ -44,7 +44,7 @@ pacman::p_load(
 In this report we consider penalized survival Cox regression model M2 for the `time` variable.
 `status` (0/1) variable indicates whether FU_TIME is censored or not. (0 is censored) 
 
-* M2 :Contains 21 proteins Baseline HbA1c), log10(ACR), eGFR as candidate covariates
+* M2 :Contains 21 proteins,  Baseline HbA1c), log10(ACR), eGFR, sex and age as candidate covariates
 
 Analysis is preformed based on:
 
@@ -75,58 +75,91 @@ varx1 <- c("B_HBA1C_PRC", "DU_ACR", "BL_eGFR", "SEX", "AGE_TL")
 
 varx2  <- c("SBP_TL", "DBP_TL", "AGEONSET_TL", "BMI_TL" )
 vars_sel <- c("INDEX",tvars, varx1, varx2, prot_nms)
-
+xvars <- c(varx1, prot_nms)
 data_all <- data_orig  %>%  
   select(all_of(vars_sel)) %>%
-  rename(., status = CASE_CONTROL, time = FU_TIME) %>% # rename variables
-  mutate(status = factor(status), SEX = factor(SEX), INDEX= factor(INDEX))  
+  rename(., status = CASE_CONTROL, futime = FU_TIME) %>% # rename variables
+  mutate(SEX = factor(SEX), INDEX= factor(INDEX))
+```
+
+```{r Data-analytical}
+
+anl_vars <- c("futime", "status", varx1, prot_nms)
+  
+data_anl  <- data_all %>% select(all_of(anl_vars))
+
+data_empty <- data_all %>% slice(0)
+  
 ```
 ## Descriptive statistics
 
 ```{r data-all-summ}
 dim(data_all)
 # colnames(data_all)   
-glimpse(data_all)
+glimpse(data_anl)
 ```
 
 
 ```{r skim-data-all}
-data_all %>% 
+data_anl %>% 
   group_by(status) %>%
-  skimr::skim(time, SEX, BL_eGFR, B_HBA1C_PRC, DU_ACR)
+  skimr::skim(futime, SEX, BL_eGFR, B_HBA1C_PRC, DU_ACR)
 ```
 
-# Tidy penalized survival model
+# Preparatory steps
 
-## Build the model
+## Resampling data
 
-https://www.tidymodels.org/start/case-study/#first-model
+Resampling data is done in preparation for cross-validation.
 
-```{r surv-mod}
+First, we perform initial split of the entire dataset. 
 
-surv_mod_init <- proportional_hazards(
-    penalty = tune(), mixture = tune()) %>% 
-    set_engine("glmnet") 
-surv_mod_init  %>%  translate()
+```{r initial-split}
+set.seed(123)
+data_splits <- rsample::initial_split(data_anl, prop=0.8)
 ```
 
+In this analysis, we use _all_ data for model training, because for model testing we will use 
+external data. 
 
-## Preprocess data using recipe
+```{r data-train}
+data_train <- data_anl   ## training(splits)
+data_test_init  <- testing(data_splits)
+```
+
+We split the training dataset for cross-validation (CV)
+
+```{r val-set}
+set.seed(234)
+val_set <- vfold_cv(data_train, v=10)
+class(val_set)
+val_set
+```
+
+## Preparing recipe
 
 https://www.tidymodels.org/start/recipes/#recipe
 
-Initiate new recipe. It can be sued s starting point for several models.
+* Recipe defines the transformations that must be applied to the _training_ data before fitting.
+* The recipe also defines the formula that will be fitted by the models.
+* Pre-processing applied using recipe needs to happen _inside_ the cross-validation loop, not outside of it
+
+Initiate new recipe. It can be used as a starting point for several models.
+Undortunately it does NOT work for coxnet model.
 
 
 ```{r survdata-recipe-init}
 surv_recp_init <-
-  recipe(time + status ~ . , data = data_all) %>%
+  recipe(data_empty) %>%
+    update_role(all_of(xvars), new_role = "predictor") %>%
+    update_role(DBP_TL, SBP_TL, AGEONSET_TL, BMI_TL, new_role = "_OMIT_") %>%
     update_role(INDEX,   new_role = "ID") %>%
-    update_role(time,    new_role = "outcome") %>%
+    update_role(futime,  new_role = "outcome") %>%
     update_role(status,  new_role = "status")  %>%
     step_dummy(all_nominal_predictors()) %>% 
     step_zv(all_predictors()) %>% 
     step_normalize(all_predictors())
+ surv_recp_init   
 ```
  
  From: https://www.tidymodels.org/start/case-study/#first-model
@@ -135,52 +168,115 @@ surv_recp_init <-
  * `step_zv()` removes indicator variables that only contain a single unique value (e.g. all zeros). This is important because, for penalized models, the predictors should be centered and scaled.
  * `step_normalize()` centers and scales numeric variables.
  
-```{r survdata-recp2}
- surv_recp2 <-  surv_recp_init %>%
-    update_role(DBP_TL, SBP_TL, AGEONSET_TL, BMI_TL, new_role = "_OMIT_")
- summary(surv_recp2) 
- summary(surv_recp2) %>% tail() 
+
+# Penalized cox regression (alpha and lambda are known)
+
+The model is defined as follows:
+
+
+```{r surv-mod}
+# PH
+surv_mod <- proportional_hazards(
+    penalty = 0.1, mixture = 0.5) %>% 
+    set_engine("glmnet") %>% 
+    set_mode("censored regression")
+class(surv_mod)
+surv_mod  %>%  translate()
 ```
 
+## Model fit
 
-## Create the workflow
+```{r surv-fit}
+surv_fit <- surv_mod %>% 
+    fit(Surv(futime, status) ~ ., data = data_train)
+```
+
+https://censored.tidymodels.org/articles/examples.html
+
+tidy(surv_fit)
+
+
+```{r surv-fit}
+pred_survival <- predict(surv_fit, data_test_init, type= "survival", time = c(3,6,9,12))
+pred_time  <- predict(surv_fit, data_test_init, type= "time")
+Surv_obs <- Surv(data_test_init$futime, data_test_init$status)
+cbind(Surv_obs, pred_time)
+%>% 
+    slice(1) %>% 
+    tidyr::unnest(col = .pred)
+```
+
+# Penalized cox regression (alpha unknown)
+
+
+## Model definition
+
+Note: Defined model contains two hyper-parameters:
+
+https://www.tidymodels.org/start/case-study/#first-model
+
+https://www.jkangpathology.com/post/tidymodel-and-glmnet/
+
+https://dials.tidymodels.org/articles/Basics.html
+
+https://www.brodrigues.co/blog/2020-03-08-tidymodels/
+
+We define three objects:
+
+1. the model itself: `surv_tune_mod`
+2. a grid of hyper-parameters: `surv_grid`
+3. a workflow: `surv_workflow_init`
+
+1. We define proportional hazards (PH) model with two hyperparameters: penalty (lambda), mixture(alpha))
+
+```{r surv-tune-mod}
+# PH
+surv_tune_mod <- proportional_hazards(
+    penalty = tune(), mixture = tune() ) %>% 
+    set_engine("glmnet")
+class(surv_tune_mod)
+surv_tune_mod  %>%  translate()
+```
+
+2. Hyperparametric grid
+
+
+```{r hyperparametric-grid}
+surv_grid <- surv_tune_mod %>%  
+        parameters(list(lambda = penalty(), alpha = mixture())) %>%
+        grid_regular(levels=c(5,3))
+class(surv_grid)
+surv_grid
+```
+
+3. Create the model workflow
 
 ```{r surv-workflow-init}  
-surv_workflow0 <- 
+surv_workflow_init <- 
   workflow() %>% 
-  add_model(surv_mod_init) %>% 
-  add_recipe(surv_recp2) %>%
-  add_formula(
+  add_model(surv_tune_mod)
 ```
 
-## Evaluate the model with resampling
-
-```{r initial-split}
-set.seed(123)
-splits <- initial_split(data_all, 
-                      strata = status, prop=0.8)
+```{r surv-wf-recp}
+surv_wf_recp2 <- surv_workflow_init %>%  
+    add_recipe(surv_recp2)
+class(surv_workflow0)
+surv_workflow0
 ```
 
 
-```{r data-train}
-data_train <- data_all  ## training(splits)
-data_test_init  <- testing(splits)
+## Fitting model
+
+Using model formula:
+
+```{r fitted-model}
+form <- Surv(futime,status) ~ SEX + AGE_TL 
+fitted_wflow <- fit(surv_workflow0, data = data_train)
 ```
 
-```{r val-set}
-set.seed(234)
-val_set <- validation_split(data_train, 
-                            prop = 0.80)
-```
 
-## Tuning hyperparameters
 
-```{r tune-grid}  
-tune_grid_dt <- grid_regular( 
-        penalty(),
-        mixture(),
-        levels = c(5,3))             
-```
+
 
 ## Train and tune the model
 
@@ -195,3 +291,12 @@ surv_workflow <- surv_workflow0 %>%
               metrics = metric_set(roc_auc))
 
 ```
+
+
+formula <-  Surv(futime, status) ~ SEX + AGE_TL
+fit(surv_mod, formula, data_all)
+
+glmnet_set <- parameters(list(lambda = penalty(), alpha = mixture()))
+
+glmnet_set2 <- update(glmnet_set, alpha = mixture(c(.3, .6)))
+glmnet_set2
