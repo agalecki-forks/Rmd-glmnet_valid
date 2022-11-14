@@ -179,7 +179,15 @@ surv_recp_init <-
     step_normalize(all_predictors())
  surv_recp_init   
 ```
- 
+include recipe into a workflow. 
+
+```{r surv-wf-recp}
+ surv_wf_recp <- workflow()%>%  
+     add_recipe(surv_recp_init)
+ class(surv_wf_recp)
+ surv_wf_recp
+```
+
  From: https://www.tidymodels.org/start/case-study/#first-model
  
  * `step_dummy()` converts characters or factors (i.e., nominal variables) into one or more numeric binary model terms for the levels of the original data.
@@ -229,35 +237,55 @@ surv_mod_manual <- proportional_hazards(
 surv_mod_manual  %>%  translate()
 ```
 
+## Model formula 
 
-
+```{r model-formula}
+mod_formula <- Surv(futime, status) ~ . 
+```
 ## Model fit
 
 https://censored.tidymodels.org/articles/examples.html
 
 ```{r surv-fit-formula}
 surv_fit <- surv_mod %>% 
-    fit(Surv(futime, status) ~ . , data = data_train)
+    fit(mod_formula, data = data_train)
+class(surv_fit) # "_coxnet"   "model_fit"
 glance(surv_fit)
 tidy(surv_fit)
 ```
 
-Extract beta coefficients for a selected lambda (identified by `step` variable.
+Extract beta coefficients for a selected lambda (identified by `step` variable).
 
 ```{r extract-estimates-1model}
 tidy(surv_fit) %>% filter(step == 10)
-
 ```
 
+## Prediction
 
-```{r surv-fit}
-pred_survival <- predict(surv_fit, data_test_init, type= "survival", time = c(3,6,9,12))
-pred_time  <- predict(surv_fit, data_test_init, type= "time")
+By default penalty is extrcated from the model specification  declared in 'surv_mod` object.
+In the examples below penalty is over-written by a value specified in `penalty` argument.
+
+```{r surv-pred-surv}
+pred_survival <- predict(surv_fit, data_test_init, penalty =0.6, 
+                         type= "survival", time = c(3,6,9,12))
+```
+
+```{r surv-pred-time}
+pred_time  <- predict(surv_fit, data_test_init, penalty = 0.6, type= "time")
 Surv_obs <- Surv(data_test_init$futime, data_test_init$status)
-cbind(Surv_obs, pred_time)
+cbind(Surv_obs, pred_time) # compare 
 ```
+
+## Cross-validation (known alpa)
+
+Use `val-set object created earlier
 
 # Penalized cox regression (alpha unknown)
+
+class(val_set) # vfold_cv, rset
+
+
+
 
 
 ## Model definition
@@ -302,18 +330,12 @@ surv_grid
 
 3. Create the model workflow
 
-```{r surv-workflow-init}  
-surv_workflow_init <- 
+```{r surv-workflow-mod}  
+surv_workflow_tune_mod <- 
   workflow() %>% 
   add_model(surv_tune_mod)
 ```
 
-```{r surv-wf-recp}
-surv_wf_recp2 <- surv_workflow_init %>%  
-    add_recipe(surv_recp2)
-class(surv_workflow0)
-surv_workflow0
-```
 
 
 ## Fitting model
@@ -322,7 +344,7 @@ Using model formula:
 
 ```{r fitted-model}
 form <- Surv(futime,status) ~ SEX + AGE_TL 
-fitted_wflow <- fit(surv_workflow0, data = data_train)
+# fitted_wflow <- fit(surv_workflow0, data = data_train)
 ```
 
 
