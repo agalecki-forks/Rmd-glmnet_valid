@@ -1,5 +1,5 @@
 ---
-title: "Tidy survival"
+title: "Tidy penalized logistic"
 author: "Chunyi Wu and Andrzej Galecki"
 date: "`r as.character(Sys.Date(), format = '%A %B %d, %Y')`"
 output:
@@ -38,19 +38,15 @@ pacman::p_load(
   censored,
   dplyr
   )
+tidymodels_prefer()
 ```
 
+In this report we consider penalized logitsic regression model for binary `status` variable.
+`status` (0/1) variable indicates whether it is case (`status` =1) or control (`status` =0)  
 
-In this report we consider penalized survival Cox regression model M2 for the `futime` variable.
-`status` (0/1) variable indicates whether FU_TIME is censored or not. (0 is censored) 
-
-* M2 :Contains 21 proteins,  Baseline HbA1c), log10(ACR), eGFR, sex and age as candidate covariates
+* Model contains 21 proteins,  Baseline HbA1c), log10(ACR), eGFR, sex and age as candidate covariates
 
 Analysis is preformed based on:
-
-https://parsnip.tidymodels.org/reference/details_proportional_hazards_glmnet.html
-
-
 
 
 # Read Data
@@ -87,8 +83,8 @@ orig_vars <- c("INDEX", orig_tvars, cvarx1, cvarx2, prot_nms)
 
 data_all <- data_orig  %>%  
   select(all_of(orig_vars)) %>%
-  mutate(SEX = factor(SEX), INDEX= factor(INDEX)) %>% 
-  rename (., status = CASE_CONTROL, futime = FU_TIME) # rename variables
+  rename (., status = CASE_CONTROL, futime = FU_TIME)  %>%# rename variables
+  mutate(SEX = factor(SEX), INDEX= factor(INDEX), status = factor(status)) 
 ```
 
 ## Analytical data
@@ -98,7 +94,7 @@ data_all <- data_orig  %>%
 # clinical covariates
 cvars <- replace(cvarx1, cvarx1 %in% c("DU_ACR"), "log10_ACR")
 
-anl_vars <- c("futime", "status", cvars, prot_nms)
+anl_vars <- c("status", cvars, prot_nms)
   
 data_anl  <- data_all %>%
   mutate (log10_ACR= log10(DU_ACR)) %>%
@@ -113,11 +109,10 @@ dim(data_anl)
 glimpse(data_anl)
 ```
 
-
 ```{r skim-data-anl}
 data_anl %>% 
   group_by(status) %>%
-  skimr::skim(futime, SEX, BL_eGFR, B_HBA1C_PRC, log10_ACR)
+  skimr::skim(SEX, BL_eGFR, B_HBA1C_PRC, log10_ACR)
 ```
 
 # Preparatory steps
@@ -133,12 +128,16 @@ set.seed(123)
 data_splits <- rsample::initial_split(data_anl, prop=0.8)
 ```
 
-In this analysis, we use _all_ data for model training, because for model testing we will use 
-external data. 
+In this analysis, we allocate _all_ data for model training, because for model testing 
+we will use external data. 
 
 ```{r data-train}
 data_train <- data_anl   ## training(splits)
-data_test_init  <- testing(data_splits)
+data_test_init  <- data_splits %>% testing()
+
+# Number of rows in train and test dataset
+nrow(data_train)
+nrow(data_test_init)
 ```
 
 We split the training dataset for cross-validation (CV)
@@ -160,32 +159,31 @@ https://www.tidymodels.org/start/recipes/#recipe
 * The recipe also defines the formula that will be fitted by the models???
 * Pre-processing applied using recipe needs to happen _inside_ the cross-validation loop, not outside of it
 
-Initiate new recipe. 
-Unfortunately, recipe is not implemented for coxnet model.
+Initiate new recipe.
 
-
-```{r survdata-recipe-init}
+```{r data-all-recipe-init}
 dt_template <- data_all %>% slice(0)
 colnms <- colnames(dt_template)
-surv_recp_init <-
+lr_recp_init <-
   recipe(dt_template) %>%
     update_role(all_of(colnms), new_role = "predictor") %>%
     update_role(DBP_TL, SBP_TL, AGEONSET_TL, BMI_TL, new_role = "_OMIT_") %>%
     update_role(INDEX,   new_role = "ID") %>%
-    update_role(futime,  new_role = "outcome") %>%
     update_role(status,  new_role = "status")  %>%
     step_dummy(all_nominal_predictors()) %>% 
     step_zv(all_predictors()) %>% 
     step_normalize(all_predictors())
- surv_recp_init   
+ lr_recp_init   
 ```
-include recipe into a workflow. 
 
-```{r surv-wf-recp}
- surv_wf_recp <- workflow()%>%  
-     add_recipe(surv_recp_init)
- class(surv_wf_recp)
- surv_wf_recp
+
+Incorporate recipe into a workflow. 
+
+```{r lr-wf-recp}
+ lr_wf_recp <- workflow()%>%  
+     add_recipe(lr_recp_init)
+ class(lr_wf_recp)
+ lr_wf_recp
 ```
 
  From: https://www.tidymodels.org/start/case-study/#first-model
@@ -195,13 +193,14 @@ include recipe into a workflow.
  * `step_normalize()` centers and scales numeric variables.
  
 
-# Penalized Cox regression (alpha is known)
+# Penalized logistic regression (alpha is known)
 
+https://www.tidymodels.org/start/case-study/
 https://parsnip.tidymodels.org/reference/glmnet-details.html#tidying-the-model-object
 
 ## Model spec
 
-Model specification is performed by calling `proportional_hazards function`.
+Model specification is performed by calling `logistic_reg()`  function.
 In a default call `penalty` argument is set to a _constant_.
 
 * this constant will be used for _prediction_ only.
@@ -211,53 +210,57 @@ In a default call `penalty` argument is set to a _constant_.
 
 The model is defined as follows:
 
-```{r surv-mod-default}
-# PH default
-surv_mod <- proportional_hazards(
-    penalty = 0.7,  # This value will be used for prediction.
+```{r lr-mod-default}
+# Logistic regression default specification
+lr_mod <- logistic_reg(
+    penalty = tune(),   # This is different compared to proportional _hazards().
     mixture = 0.5) %>% 
     set_engine("glmnet") %>% 
-    set_mode("censored regression")
-class(surv_mod)
-surv_mod  %>%  translate()
+    set_mode("classification")
+class(lr_mod) # "logistic_reg" "model_spec"
+lr_mod  %>%  translate()
 ```
 
-The code chunk below illustrates how to declare user-defined sequence of lambdas . This sequence
+The code chunk below illustrates how to declare user-defined sequence of lambdas. This sequence
 will be passed to `glmnet()` call.
 
 
-```{r surv-mod-manual}
-# PH manual
+```{r lr-mod-manual}
+# Logistic regression manual
 coef_path_values <- c(0, 10^seq(-5, 1, length.out = 7))
-surv_mod_manual <- proportional_hazards(
-    penalty = 0.7,     # This value will be used for prediction.
+lr_mod_manual <- logistic_reg(
+    penalty = tune(),     # 
     mixture = 0.5) %>% 
     set_engine("glmnet", path_values = coef_path_values) %>% 
-    set_mode("censored regression")
-surv_mod_manual  %>%  translate()
+    set_mode("classification")
+lr_mod_manual  %>%  translate()
 ```
 
 ## Model formula 
 
 ```{r model-formula}
-mod_formula <- Surv(futime, status) ~ . 
+mod_formula <- status ~ . 
 ```
 ## Model fit
 
-https://censored.tidymodels.org/articles/examples.html
-
-```{r surv-fit-formula}
-surv_fit <- surv_mod %>% 
+```{r lr-fit-formula}
+lr_fit <- lr_mod %>% 
     fit(mod_formula, data = data_train)
-class(surv_fit) # "_coxnet"   "model_fit"
-glance(surv_fit)
-tidy(surv_fit)
+class(lr_fit) # "_lognet"   "model_fit"
+
+lr_fit
+glance(lr_fit)
+lmbda <- lr_fit$fit$lambda
+lmbda[1]              # First (max) lambda in a sequence
+lmbda[length(lmbda)]  # Last  (min) lambda
+
+tidy(lr_fit, penalty = 0.07) # penalty argument is different from censored package
 ```
 
 Extract beta coefficients for a selected lambda (identified by `step` variable).
 
 ```{r extract-estimates-1model}
-tidy(surv_fit) %>% filter(step == 10)
+tidy(lr_fit, penalty = 0.07)
 ```
 
 ## Prediction
@@ -265,18 +268,17 @@ tidy(surv_fit) %>% filter(step == 10)
 By default penalty is extrcated from the model specification  declared in 'surv_mod` object.
 In the examples below penalty is over-written by a value specified in `penalty` argument.
 
-```{r surv-pred-surv}
-pred_survival <- predict(surv_fit, data_test_init, penalty =0.6, 
-                         type= "survival", time = c(3,6,9,12))
+```{r lr-pred-surv}
+pred_survival <- predict(lr_fit, data_test_init, penalty =0.6)
 ```
 
 ```{r surv-pred-time}
-pred_time  <- predict(surv_fit, data_test_init, penalty = 0.6, type= "time")
-Surv_obs <- Surv(data_test_init$futime, data_test_init$status)
-cbind(Surv_obs, pred_time) # compare 
+pred_time  <- predict(lr_fit, data_test_init, penalty = 0.6)
+_yobs <- data_test_init$status
+cbind(_yobs, pred_time) # compare 
 ```
 
-## Cross-validation (known alpa)
+## Cross-validation (known alpha)
 
 Use `val-set object created earlier
 
