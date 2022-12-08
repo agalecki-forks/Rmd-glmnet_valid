@@ -56,7 +56,7 @@ Data are prepared for "unadjusted" logistic regression (Model M1)
 ```{r, readxl-data, echo=TRUE, message=FALSE, warning=FALSE}
 #read the data that is stored under the data folder
 
-xlsx_path = "./datain/test_data053122.xlsx"
+xlsx_path = "./datain/data_example.xlsx"
 data_orig <- readxl::read_excel(xlsx_path, na = "", guess_max = 1000)
 
 dim(data_orig)
@@ -85,77 +85,8 @@ colnames(data_all)
 glimpse(data_all)
 ```
 ```{r load cva-objects}
-load("./datain/21Logistic-Reg1-save1.Rdata") # `cva_pfit1`
-load("./datain/21Logistic-Reg1-save2.Rdata") # `cva_pfit2`
+load("./datain/21Logistic-Reg1-saveFin1.Rdata") # `cva_pfit1`
+load("./datain/21Logistic-Reg1-saveFin2.Rdata") # `cva_pfit2`
 ```
 
-
-```{r tidy-cva-glmnet-method, include = FALSE}
-tidy.cva.glmnet <- function(x, extract = c("cva", "fit"), return_zeros = FALSE, ...){
-  # estimate := cvm
-  # 
-  extract <- match.arg(extract)
-  alpha   <- x$alpha   # vector
-  n <- length(alpha)  
-  modlist <- x$modlist
-  dtlist <- vector("list", length = n)
-   for (i in 1:n) {
-       modi <- modlist[[i]]      # cv.glmnet object
-       dti <- switch (extract,
-                 default  = tidy(modi),        # tidy cv.glmnet object
-                 beta = tidy(modi$glmnet.fit, return_zeros = return_zeros)  ## tidy glmnet object
-                   )
-       dti$alpha  <- alpha[i] 
-       if (extract == "default") dti <- dti %>% mutate(step = 1:nrow(dti)) 
-          
-       dtlist[[i]] <- dti
-     }
-     
-     ret <- dplyr::bind_rows(dtlist) %>% relocate (alpha) %>% 
-        relocate(step, lambda, .after = alpha) %>% arrange(alpha, step)                
-     ret <- group_by(ret, alpha)    
- return(ret)
-}
-
-glance.cva.glmnet <- function(x, extract = c("default", "beta"), return_zeros = FALSE, ...){
-  # estimate := cvm
-  # 
-  extract <- match.arg(extract)
-  alpha   <- x$alpha   # vector
-  n <- length(alpha)  
-  modlist <- x$modlist
-  dtlist <- vector("list", length = n)
-   for (i in 1:n) {
-       modi <- modlist[[i]]      # cv.glmnet object
-       dti <- switch (extract,
-                 default  = glance(modi),        # tidy cv.glmnet object
-                 beta =     glance(modi$glmnet.fit)  ## tidy glmnet object
-                   )
-       dti$alpha  <- alpha[i] 
-       dtlist[[i]] <- dti
-     }
-     
-     ret <- dplyr::bind_rows(dtlist) %>% relocate (alpha) # %>% 
-        # relocate(step, lambda, .after = alpha) %>% arrange(alpha, step)                
-     ret <- group_by(ret, alpha)    
- return(ret)
-}
-
-
-
-
-```
-
-
-```{r tidy-cva-pfit1}
-tidy(cva_pfit1)
-tidy(cva_pfit1, extract = "beta")
-glance(cva_pfit1)
-glance(cva_pfit1, extract = "beta")
-
-```
-
-Extract candidate `glmnet` model and assess it's performance in the test_data 
-
-
-
+... To be continued
