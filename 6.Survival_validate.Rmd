@@ -145,7 +145,7 @@ colnames(x1_test)  # 21 proteins
 * Extract optimal combination of alpha and lambda hyperparameters
 
 ```{r cva-pfit1Fin-load}
-load("./save/21Cox-Reg1-save1-Fin.Rdata")
+load("./datain/21Cox-Reg1-saveFin1.Rdata")
 minlossplot(cva_pfit1)
 ```
 
@@ -186,7 +186,7 @@ coef(cva_pfit1, s = lmbda1_opt, alpha = a1_opt)
 ```{r pfit1_aopt-object}
 
 which_alpha    <- which(cva_pfit1$alpha == a1_opt)  # Position of the optimal alpha
-cv_pfit1_aopt  <- cva_pfit1$modlist[[2]]
+cv_pfit1_aopt  <- cva_pfit1$modlist[[which_alpha]]
 pfit1_aopt     <- cv_pfit1_aopt$glmnet.fit  # glmnet fit(s) for the optimal alpha
 class(pfit1_aopt)
 ```
@@ -224,7 +224,7 @@ Cindex(predM1_lp, ySurv_test)                  # Optimal lambda
 
 ```{r surv-roc-M1}
                 
-## Augment `data_test` with linear predictor for M11
+## Augment `data_test` with linear predictor for M1
  data_test$lp_M1 <- predM1_lp
  
 ## Define a helper function to evaluate at various t
@@ -271,6 +271,136 @@ survivalROC_data %>%
           strip.background = element_blank())
           
 ```
+
+# Model M2 
+
+Prepare model M2 matrices and extract M2 from cva object
+
+## Model M2 newx matrix
+
+Model M2 design matrix `x2_test` is prepared for external validation/testing.
+
+
+```{r model-M2-xmtx}
+#includes all proteins after excluding missing data
+x2_test <- data.matrix(data_test[, c(prot_npx, clin_xvars)])
+dim(x2_test)
+colnames(x2_test)  # 21 proteins
+```
+
+## Load cva object for  M2
+
+^ Load cva object for  M2 fitted to training data. 
+* Extract optimal combination of alpha and lambda hyperparameters
+
+```{r cva-pfit2Fin-load}
+load("./save/21Cox-Reg1-saveFin2.Rdata")
+minlossplot(cva_pfit2)
+```
+
+* Auxilary function `get_model_parms()` defined earlier
+
+
+Extract the optimal (hyper)parameters from `cva.glmnet` object
+
+```{r get_best_params2}
+get_model_params(cva_pfit2)
+a2_opt <- get_model_params(cva_pfit2)[["alpha"]]
+lmbda2_opt <- get_model_params(cva_pfit2)[["lambdaMin"]]
+```
+
+Cox regression coefficients for Model M2 using the optimal combination of (hyper)parameters
+
+```{r get_best_coef2}
+coef(cva_pfit2, s = lmbda2_opt, alpha = a2_opt)
+```
+
+## Extract optimal M2 fit
+
+* Extract optimal M2 fit from cva object
+
+```{r pfit2_aopt-object}
+
+which_alpha    <- which(cva_pfit2$alpha == a2_opt)  # Position of the optimal alpha
+cv_pfit2_aopt  <- cva_pfit2$modlist[[which_alpha]]
+pfit2_aopt     <- cv_pfit2_aopt$glmnet.fit  # glmnet fit(s) for the optimal alpha
+class(pfit2_aopt)
+```
+
+## Predictive performance of optimal M2
+
+###  predicted values for test data
+
+
+* Calculate predicted values for test data
+
+```{r calc-pred2-vals}
+predM2_lpmtx <- predict(pfit2_aopt, newx = x2_test, type = "link") # Matrix of predicted values (multiple lambdas)
+predM2_lp    <- predict(pfit2_aopt, newx = x2_test, type = "link", s = lmbda2_opt)
+```
+
+
+### C-index
+
+Ref: Harrel Jr, F. E. and Lee, K. L. and Mark, D. B. (1996) Tutorial in biostatistics:
+multivariable prognostic models: issues in developing models, evaluating assumptions 
+and adequacy, and measuring and reducing error, _Statistics in Medicine_, 15, pages 361-387.
+
+
+```{r C-index-M2}
+apply(predM2_lpmtx, 2, Cindex, y = ySurv_test) # Multiple lambda
+Cindex(predM2_lp, ySurv_test)                  # Optimal lambda
+```
+
+### Time-dependent ROC for M2
+
+* source: (https://datascienceplus.com/time-dependent-roc-for-survival-prediction-models-in-r)
+
+
+
+```{r surv-roc-M2}
+                
+## Augment `data_test` with linear predictor for M2
+ data_test$lp_M2 <- predM2_lp
+ 
+## Helper function `survivalROC_helper()` defined earlier
+
+## Evaluate every 2.5 years
+survivalROC_data <- tibble(t = c(5, 7.5, 10, 12.5,15)) %>%
+    mutate(survivalROC = map(t, survivalROC_helper, markr = "lp_M2"),
+           ## Extract scalar AUC
+           auc = map_dbl(survivalROC, magrittr::extract2, "AUC"),
+           ## Put cut off dependent values in a data_frame
+           df_survivalROC = map(survivalROC, function(obj) {
+               as_tibble(obj[c("cut.values","TP","FP")])
+           })) %>%
+           select(-survivalROC) %>%
+    unnest(df_survivalROC) %>%
+    arrange(t, FP, TP)
+    
+survivalROC_data %>% print (n=10)
+```
+
+* Plot Time-dependent ROC every 3 years
+
+```{r surv-roc-plot}
+## Plot Time-dependent ROC every 3 years
+survivalROC_data %>%
+    ggplot(mapping = aes(x = FP, y = TP)) +
+    geom_point() +
+    geom_line() +
+    geom_label(data = survivalROC_data %>% select(t,auc) %>% unique,
+               mapping = aes(label = sprintf("%.3f", auc)), x = 0.5, y = 0.5) +
+    facet_wrap( ~ t) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+          legend.key = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank())
+          
+```
+
+
 
 ```{r exit}
 knitr::knit_exit()
