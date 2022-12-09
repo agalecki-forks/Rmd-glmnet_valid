@@ -51,6 +51,61 @@ variable was named `FU_TIME`.
 
 We will refer to Model M1 as "unadjusted" and to Model M2 as "adjusted" model.
 
+# Auxiliary functions
+
+* Auxilary function `get_model_params()` defined.
+
+```{r get-model-params-fun}
+# Extract the best (hyper) parameters from `cva.glmnet` object.
+get_model_params <- function(cvafit) {
+  alpha <- cvafit$alpha
+  lambdaMin <- sapply(cvafit$modlist, `[[`, "lambda.min")
+  lambdaSE <- sapply(cvafit$modlist, `[[`, "lambda.1se")
+  error <- sapply(cvafit$modlist, function(mod) {min(mod$cvm)})
+  best <- which.min(error)
+  data.frame(alpha = alpha[best], lambdaMin = lambdaMin[best],
+             lambdaSE = lambdaSE[best], eror = error[best])
+}
+```
+
+* `survivalROC_helper()` function is defined:
+* source: (https://datascienceplus.com/time-dependent-roc-for-survival-prediction-models-in-r)
+
+
+```{r survivalROC-helper-function}
+## Define a helper function to evaluate at various t
+survivalROC_helper <- function(t, markr) {
+    survivalROC(Stime        = data_test$time,
+                status       = data_test$status,
+                marker       = data_test[[markr]],
+                predict.time = t,
+                method       = "NNE",
+                span = 0.25 * nrow(data_test)^(-0.20))
+}
+```
+
+
+* Auxiliary `plot_timedep_ROC()` function to Plot Time-dependent ROC is defined
+
+```{r surv-roc-plot-function}
+
+## Plot Time-dependent ROC function
+
+plot_timedep_ROC <- function(surv_ROC_data){
+ surv_ROC_data %>%
+    ggplot(mapping = aes(x = FP, y = TP)) +
+    geom_point() +
+    geom_line() +
+    geom_label(data = surv_ROC_data %>% select(t,auc) %>% unique,
+               mapping = aes(label = sprintf("%.3f", auc)), x = 0.5, y = 0.5) +
+    facet_wrap( ~ t) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
+          legend.key = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank())
+    }     
+```
 
 # Data preparation 
 
@@ -74,7 +129,7 @@ dim(data_original) # No. of rows and columns
 data0 <- data_original  %>% mutate(status=CASE_CONTROL, time=FU_TIME) %>%
     mutate(log10_DU_ACR=log10(DU_ACR))  %>% filter(time>0)
 
-dim(data0) # Number of rows and columns in the modified data
+dim(data0) # Number of rows and columns in `data0`
 glimpse(data0)
 ```
 
@@ -141,7 +196,7 @@ colnames(x1_test)  # 21 proteins
 
 ## Load cva object for  M1
 
-^ Load cva object for  M1 fitted to training data. 
+* Load cva object for  M1 fitted to training data. 
 * Extract optimal combination of alpha and lambda hyperparameters
 
 ```{r cva-pfit1Fin-load}
@@ -149,20 +204,6 @@ load("./datain/21Cox-Reg1-saveFin1.Rdata")
 minlossplot(cva_pfit1)
 ```
 
-* Auxilary function defined.
-
-```{r get-model-params-fun}
-# Extract the best (hyper) parameters from cva.glmnet object.
-get_model_params <- function(fit) {
-  alpha <- fit$alpha
-  lambdaMin <- sapply(fit$modlist, `[[`, "lambda.min")
-  lambdaSE <- sapply(fit$modlist, `[[`, "lambda.1se")
-  error <- sapply(fit$modlist, function(mod) {min(mod$cvm)})
-  best <- which.min(error)
-  data.frame(alpha = alpha[best], lambdaMin = lambdaMin[best],
-             lambdaSE = lambdaSE[best], eror = error[best])
-}
-```
 
 
 Extract the optimal (hyper)parameters from `cva.glmnet` object
@@ -212,13 +253,11 @@ and adequacy, and measuring and reducing error, _Statistics in Medicine_, 15, pa
 
 
 ```{r C-index-M1}
-apply(predM1_lpmtx, 2, Cindex, y = ySurv_test) # Multiple lambda
+apply(predM1_lpmtx, 2, Cindex, y = ySurv_test) # Multiple lambdas
 Cindex(predM1_lp, ySurv_test)                  # Optimal lambda
 ```
 
 ### Time-dependent ROC for M1
-
-* source: (https://datascienceplus.com/time-dependent-roc-for-survival-prediction-models-in-r)
 
 
 
@@ -227,18 +266,9 @@ Cindex(predM1_lp, ySurv_test)                  # Optimal lambda
 ## Augment `data_test` with linear predictor for M1
  data_test$lp_M1 <- predM1_lp
  
-## Define a helper function to evaluate at various t
-survivalROC_helper <- function(t, markr) {
-    survivalROC(Stime        = data_test$time,
-                status       = data_test$status,
-                marker       = data_test[[markr]],
-                predict.time = t,
-                method       = "NNE",
-                span = 0.25 * nrow(data_test)^(-0.20))
-}
 
 ## Evaluate every 2.5 years
-survivalROC_data <- tibble(t = c(5,7.5, 10, 12.5,15)) %>%
+survivalROC_data1 <- tibble(t = c(5,7.5, 10, 12.5,15)) %>%
     mutate(survivalROC = map(t, survivalROC_helper, markr = "lp_M1"),
            ## Extract scalar AUC
            auc = map_dbl(survivalROC, magrittr::extract2, "AUC"),
@@ -250,26 +280,13 @@ survivalROC_data <- tibble(t = c(5,7.5, 10, 12.5,15)) %>%
     unnest(df_survivalROC) %>%
     arrange(t, FP, TP)
     
-survivalROC_data %>% print (n=10)
+survivalROC_data1 %>% print (n=10)
 ```
 
-* Plot Time-dependent ROC every 3 years
+Plot Time-dependent ROC for M1
 
-```{r surv-roc-plot}
-## Plot Time-dependent ROC every 3 years
-survivalROC_data %>%
-    ggplot(mapping = aes(x = FP, y = TP)) +
-    geom_point() +
-    geom_line() +
-    geom_label(data = survivalROC_data %>% select(t,auc) %>% unique,
-               mapping = aes(label = sprintf("%.3f", auc)), x = 0.5, y = 0.5) +
-    facet_wrap( ~ t) +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
-          legend.key = element_blank(),
-          plot.title = element_text(hjust = 0.5),
-          strip.background = element_blank())
-          
+```{r surv-roc-plot-M1}
+plot_timedep_ROC(survivalROC_data1)
 ```
 
 # Model M2 
@@ -294,7 +311,7 @@ colnames(x2_test)  # 21 proteins
 * Extract optimal combination of alpha and lambda hyperparameters
 
 ```{r cva-pfit2Fin-load}
-load("./save/21Cox-Reg1-saveFin2.Rdata")
+load("./datain/21Cox-Reg1-saveFin2.Rdata")
 minlossplot(cva_pfit2)
 ```
 
@@ -402,282 +419,6 @@ survivalROC_data %>%
 
 
 
-```{r exit}
-knitr::knit_exit()
-```
 
 
 
-
-# glmnet for Model M2 ($\alpha=0$)
-
-
-* Adjusted Cox Regression Model M2(adjusting for Baseline HbA1c, Log10(ACR), eGFR, Sex, and Age)
-
-## Data preparation
-
-```{r, Adjusted, echo=TRUE, message=FALSE, warning=FALSE}
-
-#select variables for adjusted model
-data2 <- scrambled  %>% select("KIM1.npx","SYND1.npx","IL.1RT1.npx","WFDC2.npx",
-         "CD27.npx", "TNFRSF10A.npx","LAYN.npx","PVRL4.npx","EDA2R.npx",
-         "TNFRSF4.npx", "GFR_alpha_1_npx","TNF.R1.npx","PI3_npx", 
-         "EFNA4.npx","TNF.R2.npx" , "DLL1.npx" ,"TNFRSF6B.npx", 
-         "CD160.npx","EPHA2.npx","RELT.npx","LTBR.npx",
-         "time","status","BL_eGFR","B_HBA1C_PRC","log10_DU_ACR","SEX","AGE_TL") 
-dim(data2)         
-
-#drop any records with NA
-data_drop_na2 <- data2 %>% drop_na()    
-
-#Total sample size
-nrow(data_drop_na2)
-
-#includes all proteins after excluding missing data
-x2 <- data.matrix(data_drop_na2[,c("KIM1.npx","SYND1.npx","IL.1RT1.npx",
-        "WFDC2.npx", "CD27.npx", "TNFRSF10A.npx","LAYN.npx","PVRL4.npx",
-        "EDA2R.npx","TNFRSF4.npx", "GFR_alpha_1_npx","TNF.R1.npx","PI3_npx",
-        "EFNA4.npx","TNF.R2.npx","DLL1.npx" ,"TNFRSF6B.npx", "CD160.npx",
-        "EPHA2.npx","RELT.npx","LTBR.npx","B_HBA1C_PRC",
-        "log10_DU_ACR","BL_eGFR","SEX","AGE_TL")])
-
-#select follow-up time and status
-y2 <- data.matrix(data_drop_na2[,c("time","status")])
-y2Surv <- survival::Surv(y2[,"time"], y2[,"status"])
-```
-
-## Model M2 fit ($\alpha=0$)
-
-```{r glmnet-pfit2, echo=TRUE, message=FALSE, warning=FALSE}
-#fit the adjusted cox regression model
-pfit2 <- glmnet(x2, y2Surv, family = "cox", alpha=0)
-
-```
-
-## Extracting info from Model M2
-
-### Coefficient plots
-
-* Adjusted Cox Regression Model Coefficient Plot
-
-```{r, Adjusted_plot, echo=TRUE, message=FALSE, warning=FALSE}
-plot(pfit2, label = TRUE) 
-```
-
-
-
-# cv.glmnet for M2 ($\alpha=0$)
-
-
-## C-V for M2 ($\alpha=0$)
-
-* Adjusted Cross-Validated Cox Regression Model Coefficient Plot
-
-```{r, Adjusted_cv_plot, echo=TRUE, message=FALSE, warning=FALSE}
-#fit the cross-validatedmodel
-cvfit2 <- cv.glmnet(x2, y2Surv, family = "cox", alpha=0)
-
-plot(cvfit2, label = TRUE) 
-```
-
-
-## Extract info from C-V (M2)
-### Coefficients for selected $\lambda$
-
-* Adjusted Cross-Validated Cox Regressionn Coefficients using `lambda.min` value
-
-```{r, Adjusted_cv_min, echo=TRUE, message=FALSE, warning=FALSE}
-#get the minimal lambda value (value of lambda that gives minimum cvm)
-(l_min <- cvfit2$lambda.min)
-
-# Express on natural log scale
-log(l_min)
-# Cross-validated Cox Regression Model using the minimal lambda
-coef(cvfit2, s = "lambda.min")
-```
-
-* Adjusted Cross-Validated Cox Regression Coefficients using `lambda.1se`
-* largest value of lambda such that error is within 1 standard error of the minimum.
-
-```{r, Adjusted_cv_lse, echo=TRUE, message=FALSE, warning=FALSE}
-(l_1se <- cvfit2$lambda.1se)
-
-# Express on natural log scale
-log(l_1se)
-
-coef(cvfit2)
-```
-
-# glmnetUtils (M2)
-
-* Glmnet models for multiple alpha 
-* We use cross-validation to tune hyperparameter $\alpha$.
-* The idea of "explicitly control the fold" is implemented in `glmnetUtils` package
-* The cva.glmnet function does simultaneous cross-validation for both the $\alpha$ and $\lambda$ parameters in an elastic net model.
-
-source: (https://glmnet.stanford.edu/articles/glmnet.html)
-
-```{r glmnetUtils_M2}
-
-set.seed(46)
-alphv <- seq(0, 1, len = 11)^3
-cva_pfit2 <- cva.glmnet(x=x2,y=y2Surv,family = "cox", alpha = alphv)
-minlossplot(cva_pfit2)
-```
-
-Extract optimal (hyper)parameters from `cva.glmnet` object
-
-```{r get_best_params_M2}
-
-(pfit2_params <- get_model_params(cva_pfit2))
-
-a2_opt <- pfit2_params[["alpha"]]
-lmbda2_opt <- pfit2_params[["lambdaMin"]]
-```
-
-Cox regression coefficients for Model M2 using the best combination of (hyper)parameters
-
-```{r get_best_coef_M2}
-
-coef(cva_pfit2, s = lmbda2_opt, alpha = a2_opt)
-```
-## Plotting survival curves for optimal M2 model
-
-See examples at: https://glmnet.stanford.edu/reference/survfit.coxnet.html
-
-Notes: 
-
-* `survfit` computes the predicted survivor function for a Cox PH model with elastic net penalty.
-* the design matrix x and response ySurv used to fit the model need to be passed to `survfit` function
-
-* Step 1: Fit the glmnet model to original data (stored in x2 and y2Surv objects) using optimal alpha.
-* Note: Resulting object `pfit2_aopt` contains models for multiple lambdas. 
-
-```{r pfit2_a-object}
-pfit2_aopt <- glmnet(x2, y2Surv, family = "cox", alpha= a2_opt)
-```
-
-```{r surv-plot}
-# survfit object for penalized Cox model
-sf0 <- survival::survfit(pfit2_aopt, s = lmbda2_opt, x = x2, y = y2Surv)
-plot(sf0)
-```
-
-Note that the same plot can be obtained using the code below.
-
-```{r surv-plot-mean}
-x2mean <- apply(x2, 2, mean)
-sfm <- survival::survfit(pfit2_aopt, s = lmbda2_opt, x = x2, y = y2Surv, newx = x2mean)
-# plot(sfm)
-```
-
-
-# Performance of optimal model M2
-
-This section should be considered as an illustration only, because the `glmnet` model
-performance is assessed using training data. For this reason performance of the model
-is too optimistic.
-
-
-## Preparatory steps
-
-* Step 1.  Object `pfit2_aopt` contains models for optimal alpha. It was created earlier in this document 
-It contains models for multiple lambdas. 
-
-
-Step 2: Prepare test data
-
-```{r Prepare-test-data-M2}
-dim(data_drop_na2)
-test_rows <- 1:17    # Select rows for testing. Possibly all rows in data_drop_na2.
-x2_test <- x2[test_rows,]
-y2_test <- y2[test_rows,]
-y2Surv_test <- survival::Surv(y2_test[,"time"], y2_test[,"status"] )
-
-data2_test <- data_drop_na2[test_rows, ]
-range(data2_test$time)
-```
-
-Step 3: Calculate predicted values for test data
-
-```{r calc-pred2-vals}
-pred_lpmtx <- predict(pfit2_aopt, newx = x2_test, type = "link") # Matrix
-pred_lp <- predict(pfit2_aopt, newx = x2_test, type = "link", s = lmbda2_opt)
-```
-
-## Predictive performance of optimal M2
-
-### C-index
-
-Ref: Harrel Jr, F. E. and Lee, K. L. and Mark, D. B. (1996) Tutorial in biostatistics:
-multivariable prognostic models: issues in developing models, evaluating assumptions 
-and adequacy, and measuring and reducing error, _Statistics in Medicine_, 15, pages 361-387.
-
-
-```{r C-index-M2}
-apply(pred_lpmtx, 2, Cindex, y = y2Surv_test) # Multiple lambda
-Cindex(pred_lp, y2Surv_test)                  # Optimal lambda
-```
-
-### Time-dependent ROC
-
-* source: (https://datascienceplus.com/time-dependent-roc-for-survival-prediction-models-in-r)
-
-
-```{r surv-roc-M2}
-                
-## Augment `data2_test` with linear predictor
- data2_test$lp <- pred_lp
- 
-
-
-## Define a helper function to evaluate at various t
-survivalROC_helper <- function(t) {
-    survivalROC(Stime        = data2_test$time,
-                status       = data2_test$status,
-                marker       = data2_test$lp,
-                predict.time = t,
-                method       = "NNE",
-                span = 0.25 * nrow(data_drop_na2)^(-0.20))
-}
-
-## Evaluate every 3 years
-survivalROC_data <- tibble(t = 3* c(1,2,3,4,5)) %>%
-    mutate(survivalROC = map(t, survivalROC_helper),
-           ## Extract scalar AUC
-           auc = map_dbl(survivalROC, magrittr::extract2, "AUC"),
-           ## Put cut off dependent values in a data_frame
-           df_survivalROC = map(survivalROC, function(obj) {
-               as_tibble(obj[c("cut.values","TP","FP")])
-           })) %>%
-           select(-survivalROC) %>%
-    unnest(df_survivalROC) %>%
-    arrange(t, FP, TP)
-    
-# survivalROC_data %>% print (n=100)
-```
-
-* Plot Time-dependent ROC every 3 years
-
-```{r surv-roc-plot-M2}
-## Plot Time-dependent ROC every 3 years
-survivalROC_data %>%
-    ggplot(mapping = aes(x = FP, y = TP)) +
-    geom_point() +
-    geom_line() +
-    geom_label(data = survivalROC_data %>% select(t,auc) %>% unique,
-               mapping = aes(label = sprintf("%.3f", auc)), x = 0.5, y = 0.5) +
-    facet_wrap( ~ t) +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5),
-          legend.key = element_blank(),
-          plot.title = element_text(hjust = 0.5),
-          strip.background = element_blank())
-```
-
-
-* Save `cva_pfit2` object for post-processing
-
-```{r save-cva_pfit2_M2}
-### save(cva_pfit2, file = "./save/21Cox-Reg1-save2.Rdata")
-```
